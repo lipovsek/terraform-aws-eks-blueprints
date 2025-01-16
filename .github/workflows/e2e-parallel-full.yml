@@ -14,10 +14,43 @@ env:
   IAMLIVE_VERSION: v0.48.0
   BUCKET_NAME: terraform-eks-blueprints-iam-policies-examples
 
+permissions:
+  contents: read
+
 jobs:
+  prereq-cleanup:
+    name: Prerequisite Cleanup
+    runs-on: ubuntu-latest
+    # These permissions are needed to interact with GitHub's OIDC Token endpoint.
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Auth AWS
+        uses: aws-actions/configure-aws-credentials@v4.0.2
+        with:
+          role-to-assume: ${{ secrets.ROLE_TO_ASSUME }}
+          aws-region: us-west-2
+          role-duration-seconds: 3600
+          role-session-name: GithubActions-Session
+
+      - name: Ensure log groups are removed
+        run: |
+          pip3 install boto3
+          python3 .github/scripts/delete-log-groups.py
+
   deploy:
     name: Run e2e test
     runs-on: ubuntu-latest
+    needs: prereq-cleanup
 
     # These permissions are needed to interact with GitHub's OIDC Token endpoint.
     permissions:
@@ -27,34 +60,28 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - example_path: examples/analytics/emr-on-eks
-          - example_path: examples/analytics/spark-k8s-operator
-          - example_path: examples/crossplane
-          - example_path: examples/eks-cluster-with-new-vpc
-          - example_path: examples/fargate-serverless
-          # - example_path: examples/fully-private-eks-cluster # skipping until issue #711
-          - example_path: examples/game-tech/agones-game-controller
-          - example_path: examples/gitops/argocd
-          # - example_path: examples/ingress-controllers/nginx # ignoring due to https://github.com/kubernetes-sigs/aws-load-balancer-controller/issues/1629
-          - example_path: examples/ipv6-eks-cluster
-          - example_path: examples/karpenter
-          - example_path: examples/multi-tenancy-with-teams
-          - example_path: examples/node-groups/fargate-profiles
-          - example_path: examples/node-groups/managed-node-groups
-          - example_path: examples/node-groups/self-managed-node-groups
-          - example_path: examples/node-groups/windows-node-groups
-          - example_path: examples/stateful
-          - example_path: examples/vpc-cni-custom-networking
+          - example_path: patterns/agones-game-controller
+          - example_path: patterns/fargate-serverless
+          - example_path: patterns/gitops/getting-started-argocd
+          - example_path: patterns/ipv6-eks-cluster
+          - example_path: patterns/karpenter
+          - example_path: patterns/multi-tenancy-with-teams
+          - example_path: patterns/stateful
     steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
+
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
       - name: Setup backend
         # Un-comment remote backend for use in workflow
         run: sed -i "s/# //g" ${{ matrix.example_path }}/versions.tf
 
       - name: Auth AWS
-        uses: aws-actions/configure-aws-credentials@v1
+        uses: aws-actions/configure-aws-credentials@v4.0.2
         with:
           role-to-assume: ${{ secrets.ROLE_TO_ASSUME }}
           aws-region: us-west-2
@@ -72,9 +99,10 @@ jobs:
           echo "iamlive_pid=$IAMLIVE_PID" >> $GITHUB_ENV
 
       - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v2
+        uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.0.0
+          terraform_version: 1.3.10
+
 
       - name: Terraform Apply
         id: apply
@@ -86,7 +114,9 @@ jobs:
           export AWS_CSM_HOST=127.0.0.1
           terraform apply -target=module.vpc -no-color -input=false -auto-approve
           terraform apply -target=module.eks_blueprints -no-color -input=false -auto-approve
+          terraform apply -target=module.eks -no-color -input=false -auto-approve
           terraform apply -target=module.eks_blueprints_kubernetes_addons -no-color -input=false -auto-approve
+          terraform apply -target=module.eks_blueprints_addons -no-color -input=false -auto-approve
           terraform apply -no-color -input=false -auto-approve
 
       - name: Terraform Destroy
@@ -97,8 +127,10 @@ jobs:
           export AWS_CSM_ENABLED=true
           export AWS_CSM_PORT=31000
           export AWS_CSM_HOST=127.0.0.1
-          terraform destroy -target=module.eks_blueprints_kubernetes_addons  -no-color -input=false -auto-approve
-          terraform destroy -target=module.eks_blueprints  -no-color -input=false -auto-approve
+          terraform destroy -target=module.eks_blueprints_kubernetes_addons -no-color -input=false -auto-approve
+          terraform destroy -target=module.eks_blueprints_addons -no-color -input=false -auto-approve
+          terraform destroy -target=module.eks_blueprints -no-color -input=false -auto-approve
+          terraform destroy -target=module.eks -no-color -input=false -auto-approve
           terraform destroy -no-color -input=false -auto-approve
 
       - name: Fail if TF apply failed
@@ -129,11 +161,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # Be careful not to change this to explicit checkout from PR ref/code, as below we run a python code that may change from the PR code.
+      - name: Harden Runner
+        uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
+
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
       - name: Configure AWS credentials from Test account
-        uses: aws-actions/configure-aws-credentials@v1
+        uses: aws-actions/configure-aws-credentials@v4.0.2
         with:
           role-to-assume: ${{ secrets.ROLE_TO_ASSUME }}
           aws-region: us-west-2
@@ -144,4 +181,4 @@ jobs:
         id: dirs
         run: |
           pip3 install boto3
-          python3 .github/workflows/iam-policy-generator.py
+          python3 .github/scripts/iam-policy-generator.py
